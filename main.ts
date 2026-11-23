@@ -13,8 +13,8 @@
 // Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output:
 //   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts --input ../input/snapshot.json
 
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { boardIssue, buildRadar, dataScript, parseSnapshot } from './lib/model.ts';
 import { buildDossier } from './vendor/makefun-board.ts';
@@ -43,7 +43,15 @@ if (!existsSync(inputFile)) {
 }
 const out = arg('output', process.env.MAKEFUN_OUTPUT_DIR ?? '/output');
 
-const snapshot = parseSnapshot(readFileSync(inputFile, 'utf8'));
+// A snapshot the model cannot score is refused in the same words as a missing one,
+// not as a stack trace: the refusal is a verdict about the input, not a crash.
+let snapshot: ReturnType<typeof parseSnapshot>;
+try {
+  snapshot = parseSnapshot(readFileSync(inputFile, 'utf8'));
+} catch (e) {
+  process.stderr.write(`token radar: the snapshot cannot be scored: ${e instanceof Error ? e.message : String(e)}\n`);
+  process.exit(2);
+}
 const { board, radar } = buildRadar(snapshot);
 const issue = boardIssue(board, snapshot);
 if (issue !== null) {
@@ -51,38 +59,40 @@ if (issue !== null) {
   process.exit(1);
 }
 
-mkdirSync(out, { recursive: true });
-writeFileSync(join(out, 'board.json'), `${JSON.stringify({ rows: board })}\n`);
-writeFileSync(join(out, 'data.js'), dataScript(radar));
-
-/** Copy a directory tree's regular files into `to`, skipping names that start with a dot. */
-function copyTree(from: string, to: string): string[] {
+/** The regular files under `from`, as relative paths, skipping names that start with a dot. */
+function listTree(from: string): string[] {
   if (!existsSync(from)) return [];
-  const copied: string[] = [];
+  const listed: string[] = [];
   const walk = (rel: string): void => {
     for (const name of readdirSync(join(from, rel))) {
       if (name.startsWith('.')) continue;
       const r = rel === '' ? name : `${rel}/${name}`;
       const path = join(from, r);
-      if (statSync(path).isDirectory()) {
-        walk(r);
-      } else if (statSync(path).isFile()) {
-        mkdirSync(join(to, rel), { recursive: true });
-        copyFileSync(path, join(to, r));
-        copied.push(r);
-      }
+      if (statSync(path).isDirectory()) walk(r);
+      else if (statSync(path).isFile()) listed.push(r);
     }
   };
   walk('');
-  return copied;
+  return listed;
 }
 
-const dashFiles = copyTree(join(here, 'dashboard'), join(out, 'dashboard'));
+/** Copy the listed files from `from` into `to`, keeping their relative paths. */
+function copyTree(from: string, to: string, files: string[]): void {
+  for (const r of files) {
+    mkdirSync(dirname(join(to, r)), { recursive: true });
+    copyFileSync(join(from, r), join(to, r));
+  }
+}
+
+// The repository's own files are validated before anything is written: a run that
+// cannot finish must leave /output exactly as it found it, never a partial tree
+// with fresh board.json and data.js sitting beside a stale dossier.json.
+const dashFiles = listTree(join(here, 'dashboard'));
 if (!dashFiles.includes('index.html')) {
   process.stderr.write('token radar: dashboard/ holds no index.html: the page is part of the deliverable\n');
   process.exit(1);
 }
-const shots = copyTree(join(here, 'screenshots'), join(out, 'screenshots'));
+const shots = listTree(join(here, 'screenshots'));
 if (shots.length < 3 || shots.length > SCREENSHOT_CAPS.max) {
   process.stderr.write(`token radar: screenshots/ holds ${shots.length} images: hand in 3 or 4, the board, a detail view and a filtered view\n`);
   process.exit(1);
@@ -93,6 +103,18 @@ for (const name of shots) {
     process.exit(1);
   }
 }
+
+mkdirSync(out, { recursive: true });
+writeFileSync(join(out, 'board.json'), `${JSON.stringify({ rows: board })}\n`);
+writeFileSync(join(out, 'data.js'), dataScript(radar));
+// The dossier is rebuilt from the output directories themselves, not from the copy
+// lists above: a file an earlier run left behind would otherwise be handed in
+// silently (a fourth screenshot the run never counted) or refuse the build (a
+// leftover the dossier cannot read). The two trees are mirrored, never merged.
+rmSync(join(out, 'dashboard'), { recursive: true, force: true });
+rmSync(join(out, 'screenshots'), { recursive: true, force: true });
+copyTree(join(here, 'dashboard'), join(out, 'dashboard'), dashFiles);
+copyTree(join(here, 'screenshots'), join(out, 'screenshots'), shots);
 
 // The dossier is written last: the scorer rebuilds it from this /output and compares bytes.
 writeFileSync(join(out, 'dossier.json'), buildDossier(out, { text_max_bytes: TEXT_MAX_BYTES, screenshots: SCREENSHOT_CAPS, dashboard: DASHBOARD_CAPS }));

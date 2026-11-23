@@ -197,10 +197,15 @@ export function categoryMarkets(snapshot: Snapshot): { global: number; sample: n
     .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
     .map(([category, list]) => {
       const med = median(list.map(winsorRatio));
+      // A peer row is evidence, not an input: it shows the protocol's actual ratio,
+      // the same number the Live table shows for the same protocol. Only the medians
+      // above are computed from winsorized ratios — capping the displayed evidence
+      // too would state two different ratios for one protocol on the same page
+      // (Aave V2 read 10.00x as a Lending peer and 18.96x as a live token).
       const peers = [...list]
         .sort((a, b) => b.mcap_usd! - a.mcap_usd! || (a.slug < b.slug ? -1 : 1))
         .slice(0, 5)
-        .map((p) => ({ slug: p.slug, name: p.name, mcap_usd: p.mcap_usd!, tvl_usd: p.tvl_usd, ratio: round4(winsorRatio(p)) }));
+        .map((p) => ({ slug: p.slug, name: p.name, mcap_usd: p.mcap_usd!, tvl_usd: p.tvl_usd, ratio: round4(p.mcap_usd! / p.tvl_usd) }));
       return {
         category,
         sample: list.length,
@@ -414,8 +419,10 @@ export function buildRadar(snapshot: Snapshot): { board: BoardRow[]; radar: Rada
     model_version: MODEL_VERSION,
     model_summary:
       `Implied value = TVL x category multiple x momentum x maturity. The category multiple is the median ` +
-      `market-cap/TVL of the snapshot's own token-bearing protocols in that category (ratios winsorized at 10x), ` +
-      `shrunk toward the global median of ${global}x by sample size ((n x category + 4 x global) / (n + 4)). ` +
+      `market-cap/TVL of the snapshot's own token-bearing protocols in that category (each ratio winsorized ` +
+      `to [0.001x, 10x] before the median, so one 400x outlier cannot price a whole category; the comparables ` +
+      `tables show actual ratios), shrunk toward the global median of ${global}x by sample size ` +
+      `((n x category + 4 x global) / (n + 4)). ` +
       `Momentum = 1 + clamp(7d TVL change, -50%, +80%) / 100 x 0.6. Maturity = 0.75 + 0.45 x min(age, 1460d) / 1460.`,
     global_multiple: global,
     token_bearing_sample: sample,
