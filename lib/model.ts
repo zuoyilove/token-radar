@@ -14,6 +14,12 @@
 //   maturity  = 0.75 + 0.45 x min(age_days, 1460) / 1460           (unknown age: 365 days)
 //   implied   = round(TVL x multiple x momentum x maturity)
 //
+// A row is only rankable when the protocol is a genuine launch candidate by the snapshot's
+// own watchlist rule: it records no token, and it is not a wrapped, staked or bridged product
+// of a token that already trades — the rule that keeps WBTC, Binance staked ETH and USDT0 off
+// the watchlist. The rule is applied to the whole board, not just the watchlist: a wrapped
+// product's "implied value" would price a token that already exists, so it is set aside
+// (counted in the dashboard, never ranked) instead of topping the board on its TVL alone.
 // No protocol name is ever special-cased: one function scores every row, and every row
 // carries its audit trail (the multiple used, the sample behind it, both adjustments), so
 // the board can be re-derived from the snapshot by hand.
@@ -42,7 +48,7 @@ export interface Snapshot {
 }
 
 /** The model's stated constants: the dashboard prints them and the audit trail uses them. */
-export const MODEL_VERSION = 'cat-multiple-1';
+export const MODEL_VERSION = 'cat-multiple-2';
 export const SHRINK_K = 4;
 export const RATIO_FLOOR = 0.001;
 export const RATIO_CAP = 10;
@@ -57,6 +63,16 @@ export const UNKNOWN_AGE_DAYS = 365;
 export const THIN_SAMPLE = 5;
 /** How many live-token protocols the dashboard's Live view carries, by market cap. */
 export const LIVE_ROWS = 30;
+/**
+ * The watchlist's own eligibility rule, from the snapshot's documentation: categories that
+ * are a wrapped, staked or bridged product of a token that already trades, or an exchange
+ * itself, never name a launch candidate. The board applies the same rule to every row.
+ */
+export const EXCLUDED_CATEGORIES = ['Bridge', 'Canonical Bridge', 'Liquid Staking', 'Liquid Restaking', 'Restaked BTC', 'CEX'];
+/** Exchange names: a protocol beginning with one is the exchange's own product. */
+export const EXCHANGE_PREFIXES = ['Binance', 'Coinbase', 'Bybit', 'Kraken', 'Bitget', 'OKX', 'Bitfinex', 'Gemini'];
+/** A whole word wrapped, staked or staking anywhere in the name, in any case. */
+const WRAPPED_WORD = /\bwrapped\b|\bstaked\b|\bstaking\b/i;
 
 /** What the token-bearing market says about one category. */
 export interface CategoryMarket {
@@ -124,6 +140,9 @@ export interface RadarData {
   board_size: number;
   early_size: number;
   live_size: number;
+  /** Pre-token protocols set aside as wrapped/staked/bridged products, by the rule's reason. */
+  set_aside_count: number;
+  set_aside_reasons: { reason: string; count: number }[];
   categories: CategoryMarket[];
   rows: RadarRow[];
   live: LiveRow[];
@@ -165,9 +184,25 @@ export function isPreToken(p: SnapshotProtocol): boolean {
   return p.mcap_usd === null && p.gecko_id === null && p.symbol === null;
 }
 
-/** Whether a protocol is one the board may rank: pre-token, not an exchange, not a versioned pool. */
+/**
+ * Why a pre-token protocol is not a launch candidate, or null when it is one: the
+ * snapshot's watchlist rule, applied as a function of the protocol's own record — its
+ * category, its name's words and prefix — never of its name as a special case. A token
+ * the record does not carry is still "records no token", never "has none": the rule only
+ * removes products the record itself shows are wrapped, staked, bridged or exchange-run.
+ */
+export function eligibilityReason(p: SnapshotProtocol): string | null {
+  if (!isPreToken(p)) return 'token-recorded';
+  if (EXCLUDED_CATEGORIES.includes(p.category ?? '')) return `category-${p.category}`;
+  if (VERSIONED.test(p.name)) return 'versioned-name';
+  if (WRAPPED_WORD.test(p.name)) return 'wrapped-or-staked-name';
+  if (EXCHANGE_PREFIXES.some((e) => p.name === e || p.name.startsWith(`${e} `))) return 'exchange-named';
+  return null;
+}
+
+/** Whether a protocol is one the board may rank: pre-token and a genuine launch candidate. */
 export function isRankable(p: SnapshotProtocol): boolean {
-  return isPreToken(p) && p.category !== 'CEX' && !VERSIONED.test(p.name);
+  return eligibilityReason(p) === null;
 }
 
 /** A token-bearing protocol with both figures the ratio needs. */
@@ -345,10 +380,27 @@ export function farmSteps(p: SnapshotProtocol, age: number | null): string[] {
 }
 
 /** The ranked board: every rankable pre-token protocol, watchlist rows never dropped. */
-export function buildBoard(snapshot: Snapshot): { board: BoardRow[]; markets: CategoryMarket[]; global: number; sample: number } {
+export function buildBoard(snapshot: Snapshot): {
+  board: BoardRow[];
+  markets: CategoryMarket[];
+  global: number;
+  sample: number;
+  setAside: { reason: string; count: number }[];
+} {
   const { global, sample, markets } = categoryMarkets(snapshot);
   const watch = new Set(snapshot.watchlist);
   const chosen = new Map<string, SnapshotProtocol>();
+  // The set-aside count is the discipline made visible: pre-token by the record, but a
+  // wrapped, staked or bridged product of a token that already trades, so never ranked.
+  const aside = new Map<string, number>();
+  for (const p of snapshot.protocols) {
+    if (!isPreToken(p)) continue;
+    const reason = eligibilityReason(p);
+    if (reason !== null) aside.set(reason, (aside.get(reason) ?? 0) + 1);
+  }
+  const setAside = [...aside.entries()]
+    .sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1))
+    .map(([reason, count]) => ({ reason, count }));
   for (const p of snapshot.protocols) if (isRankable(p)) chosen.set(p.slug, p);
   // Coverage is the gate's row: a watchlist slug stays on the board even if a future
   // snapshot makes it unrankable, scored by the same function as every other row.
@@ -387,7 +439,7 @@ export function buildBoard(snapshot: Snapshot): { board: BoardRow[]; markets: Ca
     risk_flags: riskFlags(s.p, s.v.age, s.v.sample),
     farm_steps: farmSteps(s.p, s.v.age),
   }));
-  return { board, markets, global, sample };
+  return { board, markets, global, sample, setAside };
 }
 
 /** The live-token protocols, by market cap: shown at market value, kept off the ranked board. */
@@ -410,8 +462,9 @@ export function liveRows(snapshot: Snapshot): LiveRow[] {
 
 /** Everything the dashboard renders, from the snapshot. */
 export function buildRadar(snapshot: Snapshot): { board: BoardRow[]; radar: RadarData } {
-  const { board, markets, global, sample } = buildBoard(snapshot);
+  const { board, markets, global, sample, setAside } = buildBoard(snapshot);
   const live = liveRows(snapshot);
+  const setAsideCount = setAside.reduce((n, r) => n + r.count, 0);
   const radar: RadarData = {
     as_of: snapshot.as_of,
     source: snapshot.source,
@@ -423,13 +476,18 @@ export function buildRadar(snapshot: Snapshot): { board: BoardRow[]; radar: Rada
       `to [0.001x, 10x] before the median, so one 400x outlier cannot price a whole category; the comparables ` +
       `tables show actual ratios), shrunk toward the global median of ${global}x by sample size ` +
       `((n x category + 4 x global) / (n + 4)). ` +
-      `Momentum = 1 + clamp(7d TVL change, -50%, +80%) / 100 x 0.6. Maturity = 0.75 + 0.45 x min(age, 1460d) / 1460.`,
+      `Momentum = 1 + clamp(7d TVL change, -50%, +80%) / 100 x 0.6. Maturity = 0.75 + 0.45 x min(age, 1460d) / 1460. ` +
+      `Only a genuine launch candidate is ranked: a protocol that records no token and is not a wrapped, ` +
+      `staked or bridged product of a token that already trades — the snapshot's own watchlist rule, applied ` +
+      `to the whole board. ${setAsideCount} pre-token protocols are set aside by that rule and never ranked.`,
     global_multiple: global,
     token_bearing_sample: sample,
     watchlist_size: snapshot.watchlist.length,
     board_size: board.length,
     early_size: board.filter((r) => !r.watchlist).length,
     live_size: live.length,
+    set_aside_count: setAsideCount,
+    set_aside_reasons: setAside,
     categories: markets,
     rows: board.map((r) => ({ ...r, segment: r.watchlist ? ('watchlist' as const) : ('early' as const) })),
     live,
@@ -488,6 +546,11 @@ export function boardIssue(board: BoardRow[], snapshot: Snapshot): string | null
   for (const r of board) if (!known.has(r.slug)) return `slug ${r.slug} is not in the snapshot`;
   const missing = snapshot.watchlist.filter((s) => !slugs.has(s));
   if (missing.length > 0) return `the board misses ${missing.length} watchlist slugs: ${missing.slice(0, 5).join(', ')}`;
+  const index = new Map(snapshot.protocols.map((p) => [p.slug, p]));
+  for (const r of board) {
+    const reason = eligibilityReason(index.get(r.slug)!);
+    if (reason !== null) return `${r.slug} is on the board but not a launch candidate (${reason})`;
+  }
   if (board.filter((r) => !r.watchlist).length < 60) return 'fewer than 60 non-watchlist rows';
   for (let i = 0; i < board.length; i++) if (board[i]!.rank !== i + 1) return `rank ${i + 1} is ${board[i]!.rank}`;
   for (let i = 1; i < board.length; i++) if (board[i]!.implied_value_usd > board[i - 1]!.implied_value_usd) return `row ${i + 1} outranks row ${i} on implied value`;

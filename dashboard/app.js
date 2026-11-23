@@ -60,6 +60,7 @@
     '<span class="stat"><b>' + D.watchlist_size + '</b> watchlist covered</span>' +
     '<span class="stat"><b>' + D.early_size + '</b> early finds</span>' +
     '<span class="stat"><b>' + D.live_size + '</b> live tokens set aside</span>' +
+    '<span class="stat"><b>' + D.set_aside_count + '</b> wrapped / staked / bridged products set aside, never ranked</span>' +
     '<span class="stat">Global multiple <b>' + mult(D.global_multiple) + '</b> from ' + D.token_bearing_sample + ' token-bearing</span>' +
     '<span class="stat">Model <b>' + esc(D.model_version) + '</b></span>';
   $('modelSummary').textContent = D.model_summary;
