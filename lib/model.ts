@@ -108,6 +108,27 @@ export interface BoardRow {
   };
   risk_flags: string[];
   farm_steps: string[];
+  /** The farm plan's economics, from the same numbers the steps state: one source of truth. */
+  farm_economics: FarmEconomics;
+}
+
+/** What one farm position costs and how long it takes, in numbers the drawer can show at a glance. */
+export interface FarmEconomics {
+  /** The chain the plan prices gas on (the protocol's first chain, or its main chain). */
+  chain: string;
+  capital_usd: number;
+  setup_gas_usd: number;
+  weekly_gas_usd: number;
+  hold_days: number;
+  weeks: number;
+  /** Setup gas plus one weekly gas payment per week of the hold. */
+  total_gas_usd: number;
+  /** Minutes to set up (wallet plus first position), once. */
+  setup_minutes: number;
+  /** Minutes a week of continuing activity (a weekly action plus the log). */
+  weekly_minutes: number;
+  /** Setup minutes plus the weekly minutes over the hold, plus the one-off claim check. */
+  total_minutes: number;
 }
 
 /** The dashboard's view of one board row: the board row plus nothing it cannot show. */
@@ -330,6 +351,35 @@ function actionFor(p: SnapshotProtocol, capital: number, chain: string): string 
 }
 
 /**
+ * A protocol's farm economics: the cost and time its plan needs, derived from the
+ * protocol's own record (first chain, TVL tier, age) — gas from the chain's fee class,
+ * capital from its TVL tier, the hold window from its age — never from a hand-written
+ * list of names. farmSteps states these same numbers step by step; the drawer shows
+ * them summed, so the two can never disagree.
+ */
+export function farmEconomics(p: SnapshotProtocol, age: number | null): FarmEconomics {
+  const chain = p.chains.length > 0 ? p.chains[0]! : 'its main chain';
+  const gas = gasFor(chain);
+  const capital = capitalFor(p.tvl_usd);
+  const hold = holdDaysFor(age);
+  const weeks = Math.max(1, Math.ceil(hold / 7));
+  const setupMinutes = 30;
+  const weeklyMinutes = 15;
+  return {
+    chain,
+    capital_usd: capital,
+    setup_gas_usd: gas.setup,
+    weekly_gas_usd: gas.weekly,
+    hold_days: hold,
+    weeks,
+    total_gas_usd: Math.round((gas.setup + gas.weekly * weeks) * 100) / 100,
+    setup_minutes: setupMinutes,
+    weekly_minutes: weeklyMinutes,
+    total_minutes: setupMinutes + weeklyMinutes * weeks + 10,
+  };
+}
+
+/**
  * A protocol's farm plan: six steps, each an action with a stated cost and duration. The plan
  * is derived from the protocol's own record (category, first chain, TVL, age) — gas from the
  * chain's fee class, capital from its TVL tier, the hold window from its age — never from a
@@ -438,6 +488,7 @@ export function buildBoard(snapshot: Snapshot): {
     },
     risk_flags: riskFlags(s.p, s.v.age, s.v.sample),
     farm_steps: farmSteps(s.p, s.v.age),
+    farm_economics: farmEconomics(s.p, s.v.age),
   }));
   return { board, markets, global, sample, setAside };
 }

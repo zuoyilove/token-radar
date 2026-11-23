@@ -1,6 +1,16 @@
 // Token Launch Radar's page. It reads window.RADAR (written beside dashboard/ by main.ts)
 // and renders the ranked board, the live-token evidence table, the category multiples and
 // a detail drawer per protocol. No network: every byte it shows is in data.js.
+//
+// The value model, in one place so the page can be checked against the code:
+//   implied value = TVL x category multiple x momentum x maturity
+//   category multiple = (n x category median Mcap/TVL + 4 x global median) / (n + 4)
+//   momentum = 1 + clamp(7d TVL change, -50%, +80%) / 100 x 0.6
+//   maturity = 0.75 + 0.45 x min(age in days, 1460) / 1460
+// The detail drawer works the arithmetic for the protocol it opens, with the snapshot's
+// own numbers at every step, and totals the farm plan's cost and time under it; the
+// model section works the same arithmetic for the board's #1. The category table shows
+// the median and the sample behind every multiple, with the live protocols it came from.
 // View state lives in the hash: #/board, #/board?seg=early&cat=Lending, #/p/<slug>.
 (function () {
   'use strict';
@@ -85,6 +95,20 @@
       '<td class="chains">' + peers + '</td></tr>';
   }).join('');
 
+  // ---------- worked example: the board's #1, arithmetic and all ----------
+  (function () {
+    var top = D.rows[0];
+    if (!top) return;
+    var tm = top.model;
+    var base = top.tvl_usd * tm.category_multiple;
+    var afterMom = base * tm.momentum_multiplier;
+    $('worked').textContent = 'Worked example — #' + top.rank + ' ' + top.name + ': ' + usd(top.tvl_usd) +
+      ' TVL x ' + tm.category_multiple.toFixed(2) + 'x (' + (top.category || 'global') + ', n=' + tm.category_sample +
+      ') = ' + usd(base) + '; x ' + tm.momentum_multiplier.toFixed(2) + 'x momentum = ' + usd(afterMom) +
+      '; x ' + tm.maturity_multiplier.toFixed(2) + 'x maturity ≈ ' + usd(top.implied_value_usd) +
+      ' implied value. Every row carries the same four numbers, and the detail drawer works them for any protocol you open.';
+  })();
+
   // ---------- board ----------
   function flagHtml(flags) {
     if (!flags.length) return '<span class="flag">clear</span>';
@@ -132,6 +156,10 @@
         '<td class="flags">' + flagHtml(r.risk_flags) + '</td></tr>';
     }).join('');
     $('empty').hidden = rows.length > 0;
+    $('count').textContent = state.seg === 'live'
+      ? 'Showing ' + D.live_size + ' live-token protocols — the market values the board\u2019s multiples are built from.'
+      : 'Showing ' + rows.length + ' of ' + D.board_size + ' ranked protocols' +
+        (rows.length < D.board_size ? ' match this filter.' : '.');
     var trs = $('rows').querySelectorAll('tr');
     for (var i = 0; i < trs.length; i++) {
       trs[i].addEventListener('click', function () { openDetail(this.getAttribute('data-slug')); });
@@ -164,6 +192,34 @@
     if (!r) return;
     var m = r.model;
     var cat = r.category ? catByName[r.category] : null;
+    // The worked arithmetic: each factor's product is shown, so the implied value can be
+    // re-derived from the snapshot's numbers by hand. The factors are shown to two
+    // decimals; the board's value uses the full-precision factors, so the last step reads
+    // approximately, never exactly.
+    var base = r.tvl_usd * m.category_multiple;
+    var afterMom = base * m.momentum_multiplier;
+    var multipleNote;
+    if (cat && m.category_sample > 0) {
+      multipleNote = 'The multiple is built from the category median ' + mult(cat.median_ratio) + ' over ' +
+        m.category_sample + ' token-bearing protocol' + (m.category_sample === 1 ? '' : 's') + ', shrunk toward the global ' + mult(m.global_multiple) +
+        ': (' + m.category_sample + ' x ' + cat.median_ratio.toFixed(4) + ' + 4 x ' + m.global_multiple.toFixed(4) +
+        ') / ' + (m.category_sample + 4) + ' = ' + m.category_multiple.toFixed(4) + 'x.';
+    } else {
+      multipleNote = 'No token-bearing protocol in this category, so the multiple is the global median ' +
+        mult(m.global_multiple) + ' over ' + D.token_bearing_sample + ' token-bearing protocols.';
+    }
+    var growthLabel = r.change_7d == null
+      ? '7d change unreported, neutral 1.00x'
+      : '7d ' + pct(r.change_7d) + (r.change_7d !== m.growth_pct ? ', clamped to ' + pct(m.growth_pct) : '');
+    var ageLabel = m.age_days == null
+      ? 'age assumed 365 days'
+      : 'age ' + m.age_days + ' days' + (m.age_days > 1460 ? ', capped at 1460' : '');
+    var fe = r.farm_economics;
+    var money = function (v) { return '$' + (Number.isInteger(v) ? String(v) : v.toFixed(2)); };
+    var farmSummary = 'About ' + money(fe.setup_gas_usd) + ' of gas to set up, about ' + money(fe.weekly_gas_usd) +
+      ' a week for ' + fe.weeks + ' weeks (about ' + money(fe.total_gas_usd) + ' of gas in all), ' + money(fe.capital_usd) +
+      ' of capital held ' + fe.hold_days + ' days, about ' + fe.total_minutes + ' minutes in all (' +
+      fe.setup_minutes + ' to set up, ' + fe.weekly_minutes + ' a week). The steps below state the same numbers one by one.';
     var peers = cat && cat.peers.length
       ? cat.peers.map(function (p) {
           return '<tr><td>' + esc(p.name) + '</td><td class="val">' + usd(p.mcap_usd) + '</td><td class="val">' + usd(p.tvl_usd) + '</td><td class="val">' + mult(p.ratio) + '</td></tr>';
@@ -180,19 +236,22 @@
       '<span>Chains <b>' + esc(r.chains.join(', ')) + '</b></span>' +
       '<span>Listed <b>' + esc(r.listed_at || 'unreported') + '</b></span>' +
       '<span>Age <b>' + (r.age_days == null ? 'unreported' : r.age_days + ' days') + '</b></span></div>' +
-      '<h3>Implied value breakdown</h3>' +
+      '<h3>Implied value, worked</h3>' +
       '<table><tbody>' +
       '<tr><td class="lab">TVL (snapshot)</td><td class="val">' + usd(r.tvl_usd) + '</td></tr>' +
       '<tr><td class="lab">x category multiple (' + esc(r.category || 'global') + ', n=' + m.category_sample + ')</td><td class="val">' + mult(m.category_multiple) + '</td></tr>' +
-      '<tr><td class="lab">x momentum (7d ' + pct(r.change_7d) + ', clamped)</td><td class="val">' + m.momentum_multiplier.toFixed(2) + 'x</td></tr>' +
-      '<tr><td class="lab">x maturity (age ' + (m.age_days == null ? 'assumed 365d' : m.age_days + 'd') + ')</td><td class="val">' + m.maturity_multiplier.toFixed(2) + 'x</td></tr>' +
-      '<tr class="total"><td>Implied value</td><td class="val">' + usd(r.implied_value_usd) + '</td></tr>' +
+      '<tr><td class="lab">= base value</td><td class="val">' + usd(base) + '</td></tr>' +
+      '<tr><td class="lab">x momentum (' + esc(growthLabel) + ')</td><td class="val">' + m.momentum_multiplier.toFixed(2) + 'x</td></tr>' +
+      '<tr><td class="lab">= after momentum</td><td class="val">' + usd(afterMom) + '</td></tr>' +
+      '<tr><td class="lab">x maturity (' + esc(ageLabel) + ')</td><td class="val">' + m.maturity_multiplier.toFixed(2) + 'x</td></tr>' +
+      '<tr class="total"><td>≈ implied value</td><td class="val">' + usd(r.implied_value_usd) + '</td></tr>' +
       '</tbody></table>' +
+      '<p class="note">' + esc(multipleNote) + ' Factors are shown to two decimals; the board\u2019s value uses the full-precision factors.</p>' +
       '<h3>Live comparables in ' + esc(r.category || 'this category') + '</h3>' +
       '<table><thead><tr><th>Protocol</th><th style="text-align:right">Mcap</th><th style="text-align:right">TVL</th><th style="text-align:right">Ratio</th></tr></thead>' +
       '<tbody>' + peers + '</tbody></table>' +
       '<h3>Risk flags</h3><ul>' + flags + '</ul>' +
-      '<h3>Farm plan</h3><ol>' + r.farm_steps.map(function (s) { return '<li>' + esc(s) + '</li>'; }).join('') + '</ol>';
+      '<h3>Farm plan</h3><p class="note">' + esc(farmSummary) + '</p><ol>' + r.farm_steps.map(function (s) { return '<li>' + esc(s) + '</li>'; }).join('') + '</ol>';
     $('dclose').addEventListener('click', closeDetail);
   }
   $('scrim').addEventListener('click', closeDetail);

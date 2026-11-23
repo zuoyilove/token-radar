@@ -65,8 +65,10 @@ body {
 .sortlab { color: var(--dim); display: flex; gap: 7px; align-items: center; }
 
 main { padding: 6px 28px 34px; }
+.count { color: var(--dim); font-family: var(--mono); font-size: 12.5px; margin: 12px 0 4px; }
+.worked { border-left: 3px solid var(--amber); padding-left: 12px; }
 table { width: 100%; border-collapse: collapse; }
-th, td { padding: 7px 9px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+th, td { padding: 8px 10px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
 th { color: var(--dim); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.6px; }
 td.num, th.num { text-align: right; font-family: var(--mono); font-size: 13px; white-space: nowrap; }
 tbody tr { cursor: pointer; }
@@ -104,7 +106,8 @@ tbody tr:hover { background: rgba(242, 168, 29, 0.06); }
 }
 #drawer h2 { margin: 0 30px 2px 0; font-size: 20px; }
 #drawer .sub { color: var(--dim); font-family: var(--mono); font-size: 12px; margin-bottom: 12px; }
-#drawer h3 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.7px; color: var(--amber); margin: 20px 0 8px; }
+#drawer h3 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.7px; color: var(--amber); margin: 22px 0 8px; }
+#drawer .note { font-size: 12.5px; margin: 8px 0 4px; }
 #drawer table { font-size: 13px; }
 #drawer td.lab { color: var(--dim); }
 #drawer td.val { text-align: right; font-family: var(--mono); white-space: nowrap; }
