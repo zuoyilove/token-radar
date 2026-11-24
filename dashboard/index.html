@@ -3,16 +3,17 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Token Launch Radar — pre-token protocols priced by their category's own multiple</title>
+<title>Token Launch Radar — pre-token protocols priced by a size curve fitted to the market</title>
 <link rel="stylesheet" href="app.css">
 </head>
 <body>
 <header class="top">
   <div class="brand"><span class="blip" aria-hidden="true"></span><h1>Token Launch Radar</h1></div>
   <p class="tag">Every pre-token protocol in the snapshot, ranked by an implied value derived from the
-  snapshot's own market: the median market-cap / TVL of the token-bearing protocols in its category,
-  shrunk toward the global median when the sample is thin, then adjusted for the last week's TVL
-  momentum and for how long the protocol has run without a token. Only a genuine launch candidate
+  snapshot's own market: a size curve fitted to the snapshot's token-bearing protocols — log market
+  cap against log TVL, with a fitted intercept per category — and tested held-out twice before it
+  was used. A token's value grows roughly with the square root of TVL, not in proportion to it,
+  so a flat multiple would overprice the giants and underprice the small. Only a genuine launch candidate
   is ranked: a protocol that records no token and is not a wrapped, staked or bridged product of
   a token that already trades — the snapshot's own watchlist rule, applied to the whole board —
   so a wrapped product never tops the board on its TVL alone. Click any row for the full
@@ -58,7 +59,7 @@
   <section id="liveWrap" hidden>
     <h2>Live tokens — the market's own values, kept off the ranked board</h2>
     <p class="note">These protocols already trade. They are not ranked and carry no implied value;
-    their market-cap / TVL ratios are the evidence the board's category multiples are built from.</p>
+    their market caps and TVLs are the data the board's value curve is fitted from.</p>
     <table id="liveTable">
       <thead><tr><th>Protocol</th><th>Category</th><th class="num">Market cap</th>
       <th class="num">TVL</th><th class="num">Mcap / TVL</th><th class="num">7d</th></tr></thead>
@@ -72,7 +73,7 @@
     <p id="worked" class="note worked"></p>
     <table id="catTable">
       <thead><tr><th>Category</th><th class="num">Token-bearing sample</th>
-      <th class="num">Median Mcap / TVL</th><th class="num">Multiple used (shrunk)</th><th>Top live comparables</th></tr></thead>
+      <th class="num">Median Mcap / TVL</th><th class="num">Fitted multiple at $1B TVL</th><th>Top live comparables</th></tr></thead>
       <tbody id="catRows"></tbody>
     </table>
   </section>

@@ -3,10 +3,18 @@
 // a detail drawer per protocol. No network: every byte it shows is in data.js.
 //
 // The value model, in one place so the page can be checked against the code:
-//   implied value = TVL x category multiple x momentum x maturity
-//   category multiple = (n x category median Mcap/TVL + 4 x global median) / (n + 4)
-//   momentum = 1 + clamp(7d TVL change, -50%, +80%) / 100 x 0.6
-//   maturity = 0.75 + 0.45 x min(age in days, 1460) / 1460
+//   log(implied value) = curve intercept + curve slope x log(TVL) + category intercept
+//   multiple = implied value / TVL, falling as TVL rises (the fitted size curve)
+//   curve intercept and slope are fitted at run time from the snapshot's own
+//   token-bearing protocols (least squares of log market cap on log TVL); each
+//   category's intercept is its mean residual, shrunk toward the global curve.
+//   A 7-day-growth term and an age term were fitted the same way and dropped:
+//   neither improved held-out error, so they are shown as risk flags, not priced.
+// The detail drawer works the arithmetic for the protocol it opens, with the snapshot's
+// own numbers at every step, and totals the farm plan's cost and time under it; the
+// model section works the same arithmetic for the board's #1. The category table shows
+// the median and the fitted multiple at $1B TVL behind every row, with the live
+// protocols it came from.
 // The detail drawer works the arithmetic for the protocol it opens, with the snapshot's
 // own numbers at every step, and totals the farm plan's cost and time under it; the
 // model section works the same arithmetic for the board's #1. The category table shows
@@ -27,13 +35,13 @@
     'thin-category-sample': 'thin category sample'
   };
   var FLAG_WHY = {
-    'tvl-shrinking': 'TVL fell at least 15% in the last 7 days: momentum is against it, and the momentum factor already prices some of that in.',
-    'tvl-surging': 'TVL rose at least 40% in 7 days: hot money may be renting the number; the momentum factor is capped at +80% for exactly this reason.',
-    'change-unreported': 'The snapshot carries no 7d change for this protocol, so its momentum factor is a neutral 1.00.',
-    'age-unreported': 'No listing date in the snapshot; the maturity factor assumes 365 days.',
-    'under-120-days': 'Running less than 120 days: less history behind the TVL, and the maturity factor is still low.',
+    'tvl-shrinking': 'TVL fell at least 15% in the last 7 days. Growth was fitted as a value term and did not survive held-out testing, so it is flagged here rather than priced into the value.',
+    'tvl-surging': 'TVL rose at least 40% in 7 days: hot money may be renting the number. Growth was fitted as a value term and did not survive held-out testing, so it is flagged here rather than priced into the value.',
+    'change-unreported': 'The snapshot carries no 7d change for this protocol, so there is no growth signal to flag.',
+    'age-unreported': 'No listing date in the snapshot; age was fitted as a value term and did not survive held-out testing, so it is flagged here and sets the farm hold window instead.',
+    'under-120-days': 'Running less than 120 days: less history behind the TVL. Age was fitted as a value term and did not survive held-out testing, so it is flagged here and sets the farm hold window instead.',
     'single-chain': 'Present on one chain only: no second venue if that chain or its bridge has trouble.',
-    'thin-category-sample': 'Fewer than 5 token-bearing protocols in its category, so the multiple leans on the global median through shrinkage.'
+    'thin-category-sample': 'Fewer than 5 token-bearing protocols in its category, so its fitted intercept leans on the global curve through shrinkage.'
   };
 
   function esc(s) {
@@ -71,7 +79,8 @@
     '<span class="stat"><b>' + D.early_size + '</b> early finds</span>' +
     '<span class="stat"><b>' + D.live_size + '</b> live tokens set aside</span>' +
     '<span class="stat"><b>' + D.set_aside_count + '</b> wrapped / staked / bridged products set aside, never ranked</span>' +
-    '<span class="stat">Global multiple <b>' + mult(D.global_multiple) + '</b> from ' + D.token_bearing_sample + ' token-bearing</span>' +
+    '<span class="stat">Value curve <b>log mcap = ' + D.validation.slope.toFixed(2) + ' x log TVL</b>, fitted on ' + D.token_bearing_sample + ' token-bearing</span>' +
+    '<span class="stat">Held-out 5-fold MAE <b>' + D.validation.cv_mae_fit.toFixed(2) + '</b> vs ' + D.validation.cv_mae_median.toFixed(2) + ' for category medians</span>' +
     '<span class="stat">Model <b>' + esc(D.model_version) + '</b></span>';
   $('modelSummary').textContent = D.model_summary;
 
@@ -100,13 +109,15 @@
     var top = D.rows[0];
     if (!top) return;
     var tm = top.model;
-    var base = top.tvl_usd * tm.category_multiple;
-    var afterMom = base * tm.momentum_multiplier;
-    $('worked').textContent = 'Worked example — #' + top.rank + ' ' + top.name + ': ' + usd(top.tvl_usd) +
-      ' TVL x ' + tm.category_multiple.toFixed(2) + 'x (' + (top.category || 'global') + ', n=' + tm.category_sample +
-      ') = ' + usd(base) + '; x ' + tm.momentum_multiplier.toFixed(2) + 'x momentum = ' + usd(afterMom) +
-      '; x ' + tm.maturity_multiplier.toFixed(2) + 'x maturity ≈ ' + usd(top.implied_value_usd) +
-      ' implied value. Every row carries the same four numbers, and the detail drawer works them for any protocol you open.';
+    var lnTvl = Math.log(top.tvl_usd);
+    $('worked').textContent = 'Worked example — #' + top.rank + ' ' + top.name + ': ln(' + usd(top.tvl_usd) +
+      ' TVL) = ' + lnTvl.toFixed(2) + '; ' + tm.curve_slope.toFixed(2) + ' x ' + lnTvl.toFixed(2) + ' = ' +
+      (tm.curve_slope * lnTvl).toFixed(2) + '; + ' + tm.curve_intercept.toFixed(2) + ' curve intercept + ' +
+      (tm.category_intercept >= 0 ? '+' : '') + tm.category_intercept.toFixed(2) + ' ' + (top.category || 'global') +
+      ' intercept (n=' + tm.category_sample + ') = ' +
+      (tm.curve_slope * lnTvl + tm.curve_intercept + tm.category_intercept).toFixed(2) +
+      '; exp gives ≈ ' + usd(top.implied_value_usd) + ' implied value, a ' + tm.category_multiple.toFixed(3) +
+      'x multiple on its TVL. Every row carries the same three numbers, and the detail drawer works them for any protocol you open.';
   })();
 
   // ---------- board ----------
@@ -192,28 +203,30 @@
     if (!r) return;
     var m = r.model;
     var cat = r.category ? catByName[r.category] : null;
-    // The worked arithmetic: each factor's product is shown, so the implied value can be
-    // re-derived from the snapshot's numbers by hand. The factors are shown to two
-    // decimals; the board's value uses the full-precision factors, so the last step reads
-    // approximately, never exactly.
-    var base = r.tvl_usd * m.category_multiple;
-    var afterMom = base * m.momentum_multiplier;
+    // The worked arithmetic: each term is shown, so the implied value can be
+    // re-derived from the snapshot's numbers by hand. The curve terms are shown
+    // to two decimals; the board's value uses the full-precision terms, so the
+    // last step reads approximately, never exactly.
+    var lnTvl = Math.log(r.tvl_usd);
+    var slopeTerm = m.curve_slope * lnTvl;
+    var lnImplied = slopeTerm + m.curve_intercept + m.category_intercept;
     var multipleNote;
     if (cat && m.category_sample > 0) {
-      multipleNote = 'The multiple is built from the category median ' + mult(cat.median_ratio) + ' over ' +
-        m.category_sample + ' token-bearing protocol' + (m.category_sample === 1 ? '' : 's') + ', shrunk toward the global ' + mult(m.global_multiple) +
-        ': (' + m.category_sample + ' x ' + cat.median_ratio.toFixed(4) + ' + 4 x ' + m.global_multiple.toFixed(4) +
-        ') / ' + (m.category_sample + 4) + ' = ' + m.category_multiple.toFixed(4) + 'x.';
+      var meanResid = m.category_intercept * (m.category_sample + 4) / m.category_sample;
+      multipleNote = 'The category intercept is the mean residual of the category\u2019s ' + m.category_sample +
+        ' token-bearing protocols against the global curve (' + (meanResid >= 0 ? '+' : '') + meanResid.toFixed(2) +
+        ' on average), shrunk toward the global curve: (' + m.category_sample + ' x ' + meanResid.toFixed(4) +
+        ' + 4 x 0) / ' + (m.category_sample + 4) + ' = ' + (m.category_intercept >= 0 ? '+' : '') + m.category_intercept.toFixed(4) +
+        '. Its median market-cap/TVL is ' + mult(cat.median_ratio) + '; the multiple here is the fitted size curve at this protocol\u2019s own TVL, not that median.';
     } else {
-      multipleNote = 'No token-bearing protocol in this category, so the multiple is the global median ' +
-        mult(m.global_multiple) + ' over ' + D.token_bearing_sample + ' token-bearing protocols.';
+      multipleNote = 'No token-bearing protocol in this category, so its intercept is 0 and the protocol is priced on the global curve alone.';
     }
     var growthLabel = r.change_7d == null
-      ? '7d change unreported, neutral 1.00x'
+      ? '7d change unreported'
       : '7d ' + pct(r.change_7d) + (r.change_7d !== m.growth_pct ? ', clamped to ' + pct(m.growth_pct) : '');
     var ageLabel = m.age_days == null
-      ? 'age assumed 365 days'
-      : 'age ' + m.age_days + ' days' + (m.age_days > 1460 ? ', capped at 1460' : '');
+      ? 'age unreported'
+      : 'age ' + m.age_days + ' days';
     var fe = r.farm_economics;
     var money = function (v) { return '$' + (Number.isInteger(v) ? String(v) : v.toFixed(2)); };
     var farmSummary = 'About ' + money(fe.setup_gas_usd) + ' of gas to set up, about ' + money(fe.weekly_gas_usd) +
@@ -239,14 +252,17 @@
       '<h3>Implied value, worked</h3>' +
       '<table><tbody>' +
       '<tr><td class="lab">TVL (snapshot)</td><td class="val">' + usd(r.tvl_usd) + '</td></tr>' +
-      '<tr><td class="lab">x category multiple (' + esc(r.category || 'global') + ', n=' + m.category_sample + ')</td><td class="val">' + mult(m.category_multiple) + '</td></tr>' +
-      '<tr><td class="lab">= base value</td><td class="val">' + usd(base) + '</td></tr>' +
-      '<tr><td class="lab">x momentum (' + esc(growthLabel) + ')</td><td class="val">' + m.momentum_multiplier.toFixed(2) + 'x</td></tr>' +
-      '<tr><td class="lab">= after momentum</td><td class="val">' + usd(afterMom) + '</td></tr>' +
-      '<tr><td class="lab">x maturity (' + esc(ageLabel) + ')</td><td class="val">' + m.maturity_multiplier.toFixed(2) + 'x</td></tr>' +
+      '<tr><td class="lab">ln(TVL)</td><td class="val">' + lnTvl.toFixed(2) + '</td></tr>' +
+      '<tr><td class="lab">x curve slope ' + m.curve_slope.toFixed(2) + '</td><td class="val">' + slopeTerm.toFixed(2) + '</td></tr>' +
+      '<tr><td class="lab">+ curve intercept</td><td class="val">' + m.curve_intercept.toFixed(2) + '</td></tr>' +
+      '<tr><td class="lab">+ ' + esc(r.category || 'global') + ' intercept (n=' + m.category_sample + ')</td><td class="val">' + (m.category_intercept >= 0 ? '+' : '') + m.category_intercept.toFixed(2) + '</td></tr>' +
+      '<tr><td class="lab">= ln(implied value)</td><td class="val">' + lnImplied.toFixed(2) + '</td></tr>' +
       '<tr class="total"><td>≈ implied value</td><td class="val">' + usd(r.implied_value_usd) + '</td></tr>' +
+      '<tr><td class="lab">Multiple on TVL (implied / TVL)</td><td class="val">' + m.category_multiple.toFixed(3) + 'x</td></tr>' +
+      '<tr><td class="lab">7d growth (' + esc(growthLabel) + ') — tested, not priced</td><td class="val">flagged, not priced</td></tr>' +
+      '<tr><td class="lab">Age (' + esc(ageLabel) + ') — tested, not priced</td><td class="val">flagged, not priced</td></tr>' +
       '</tbody></table>' +
-      '<p class="note">' + esc(multipleNote) + ' Factors are shown to two decimals; the board\u2019s value uses the full-precision factors.</p>' +
+      '<p class="note">' + esc(multipleNote) + ' Terms are shown to two decimals; the board\u2019s value uses the full-precision terms. Growth and age were fitted as value terms and dropped because neither improved held-out error; they still appear as risk flags below and set the farm hold window.</p>' +
       '<h3>Live comparables in ' + esc(r.category || 'this category') + '</h3>' +
       '<table><thead><tr><th>Protocol</th><th style="text-align:right">Mcap</th><th style="text-align:right">TVL</th><th style="text-align:right">Ratio</th></tr></thead>' +
       '<tbody>' + peers + '</tbody></table>' +
