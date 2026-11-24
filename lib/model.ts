@@ -1,28 +1,18 @@
 // The radar's valuation model: one sealed snapshot in, one ranked board of pre-token
 // protocols out, with the working shown for every row.
 //
-// The starter house model prices every protocol at one flat 0.25 x TVL. The v3 model
-// priced each category at its median Mcap/TVL, shrunk toward the global median. This
-// model fits the market's size curve instead: over the snapshot's own token-bearing
-// protocols, log market cap grows with log TVL at a fitted slope well below 1 (about
-// 0.52), so a token's value grows roughly with the square root of TVL — a $10B protocol
-// is not worth ten times a $1B one, and a flat multiple overprices the giants and
-// underprices the small. Each category then carries its own fitted intercept, shrunk
-// toward the global curve when its sample is thin:
+// The starter house model prices every protocol at one flat 0.25 x TVL. This model instead
+// asks the snapshot itself what a token is worth in each category: among the protocols that
+// already have a token, the market-cap / TVL ratio has a median per category, and those
+// medians are far apart (lending trades near 0.13 x TVL, cross-chain bridges above 1.2 x).
+// A pre-token protocol is priced at its own category's median, shrunk toward the global
+// median when the category's sample is thin, then adjusted for the last week's TVL momentum
+// and for how long the protocol has run without a token:
 //
-//   log(implied) = intercept + slope x log(TVL) + category_intercept
-//   multiple     = implied / TVL   (falls as TVL rises: the size curve, in one number)
-//
-// The curve is fitted at run time from the snapshot's own token-bearing protocols —
-// no coefficient is hard-coded — and it is tested held-out twice before it is used:
-// a 5-fold cross-validation and a time split (fit on the earlier-listed half, test on
-// the later half), both against the v3 category-median model on the same folds. The
-// fitted curve wins both: 5-fold MAE of log market cap 1.61 vs 1.83 for the medians,
-// time-split 1.64–1.72 vs 1.92–1.97. Two terms were fitted the same way and dropped:
-// a 7-day-growth term (held-out MAE 1.61, no better) and an age term (1.63, worse),
-// so growth and age are shown as risk flags and set the farm hold window, but are
-// not priced into the value. That is the honest result of the test, not an assumption:
-// hot TVL and old age do not predict a higher market-cap/TVL in this snapshot.
+//   multiple  = (n x category_median + 4 x global_median) / (n + 4), ratios winsorized to [0.001, 10]
+//   momentum  = 1 + clamp(change_7d_pct, -50, +80) / 100 x 0.6     (unreported change: 1.0)
+//   maturity  = 0.75 + 0.45 x min(age_days, 1460) / 1460           (unknown age: 365 days)
+//   implied   = round(TVL x multiple x momentum x maturity)
 //
 // A row is only rankable when the protocol is a genuine launch candidate by the snapshot's
 // own watchlist rule: it records no token, and it is not a wrapped, staked or bridged product
@@ -58,19 +48,17 @@ export interface Snapshot {
 }
 
 /** The model's stated constants: the dashboard prints them and the audit trail uses them. */
-export const MODEL_VERSION = 'size-curve-fit-1';
-/** Shrinkage for a category's fitted intercept toward the global curve (0). */
+export const MODEL_VERSION = 'cat-multiple-2';
 export const SHRINK_K = 4;
 export const RATIO_FLOOR = 0.001;
 export const RATIO_CAP = 10;
-/** The fitted slope is clamped to this band: a guard against a degenerate fit, never binding here (fitted ≈ 0.52). */
-export const SLOPE_FLOOR = 0.3;
-export const SLOPE_CAP = 0.8;
-/** A category intercept is clamped to this band (fitted range ≈ −1.03…+1.31). */
-export const INTERCEPT_FLOOR = -1.5;
-export const INTERCEPT_CAP = 1.5;
-/** The TVL at which a category's multiple is quoted in the evidence table ($1B). */
-export const QUOTE_TVL = 1_000_000_000;
+export const MOMENTUM_FLOOR_PCT = -50;
+export const MOMENTUM_CAP_PCT = 80;
+export const MOMENTUM_WEIGHT = 0.6;
+export const MATURITY_BASE = 0.75;
+export const MATURITY_RANGE = 0.45;
+export const MATURITY_DAYS = 1460;
+export const UNKNOWN_AGE_DAYS = 365;
 /** A category sample smaller than this is flagged thin on every row that uses it. */
 export const THIN_SAMPLE = 5;
 /** How many live-token protocols the dashboard's Live view carries, by market cap. */
@@ -91,25 +79,8 @@ export interface CategoryMarket {
   category: string;
   sample: number;
   median_ratio: number;
-  /** The fitted size-curve multiple at $1B TVL: exp(intercept + slope x ln(1e9) + category_intercept) / 1e9. */
   multiple: number;
-  /** The category's fitted intercept on the log curve, shrunk toward the global curve. */
-  intercept: number;
   peers: { slug: string; name: string; mcap_usd: number; tvl_usd: number; ratio: number }[];
-}
-
-/** How the fitted curve held up when tested held-out, computed at run time from the snapshot. */
-export interface CurveValidation {
-  /** Token-bearing protocols the curve was fitted and tested on. */
-  sample: number;
-  /** Fitted slope of log market cap on log TVL. */
-  slope: number;
-  /** 5-fold cross-validation, MAE of log market cap: fitted curve vs v3 category medians. */
-  cv_mae_fit: number;
-  cv_mae_median: number;
-  /** Time split (fit earlier-listed half, test later half), MAE of log market cap, same pair. */
-  time_mae_fit: number;
-  time_mae_median: number;
 }
 
 /** One row of board.json: the ranked board's row, audit trail included. */
@@ -127,15 +98,12 @@ export interface BoardRow {
   age_days: number | null;
   implied_value_usd: number;
   model: {
-    /** The row's size-curve multiple: implied value / TVL, falling as TVL rises. */
     category_multiple: number;
     category_sample: number;
-    /** The global curve's multiple at $1B TVL (category intercept 0). */
     global_multiple: number;
-    curve_slope: number;
-    curve_intercept: number;
-    category_intercept: number;
     growth_pct: number;
+    momentum_multiplier: number;
+    maturity_multiplier: number;
     age_days: number | null;
   };
   risk_flags: string[];
@@ -188,7 +156,6 @@ export interface RadarData {
   model_version: string;
   model_summary: string;
   global_multiple: number;
-  validation: CurveValidation;
   token_bearing_sample: number;
   watchlist_size: number;
   board_size: number;
@@ -266,147 +233,13 @@ function hasRatio(p: SnapshotProtocol): boolean {
 
 const winsorRatio = (p: SnapshotProtocol): number => clamp(p.mcap_usd! / p.tvl_usd, RATIO_FLOOR, RATIO_CAP);
 
-/** Least squares for y = b0 + b1 x, solved in closed form; deterministic on any input order. */
-function olsSlope(xs: number[], ys: number[]): { intercept: number; slope: number } {
-  const n = xs.length;
-  const mx = xs.reduce((s, x) => s + x, 0) / n;
-  const my = ys.reduce((s, y) => s + y, 0) / n;
-  let sxx = 0;
-  let sxy = 0;
-  for (let i = 0; i < n; i++) {
-    sxx += (xs[i]! - mx) * (xs[i]! - mx);
-    sxy += (xs[i]! - mx) * (ys[i]! - my);
-  }
-  const slope = sxx > 0 ? sxy / sxx : 0;
-  return { intercept: my - slope * mx, slope };
-}
-
-/** The v3 category-median model, kept only as the held-out baseline the fitted curve must beat. */
-function medianMultiple(train: SnapshotProtocol[], global: number): Map<string, number> {
-  const byCat = new Map<string, number[]>();
-  for (const p of train) {
-    const key = p.category ?? 'Uncategorized';
-    const list = byCat.get(key) ?? [];
-    list.push(winsorRatio(p));
-    byCat.set(key, list);
-  }
-  const out = new Map<string, number>();
-  for (const [cat, list] of byCat) out.set(cat, (list.length * median(list) + SHRINK_K * global) / (list.length + SHRINK_K));
-  return out;
-}
-
-function medianImplied(p: SnapshotProtocol, asOf: string, mults: Map<string, number>, global: number): number {
-  const mult = mults.get(p.category ?? 'Uncategorized') ?? global;
-  const growth = p.change_7d === null ? 0 : clamp(p.change_7d, -50, 80);
-  const momentum = 1 + (growth / 100) * 0.6;
-  const age = ageDays(asOf, p.listed_at);
-  const maturity = 0.75 + 0.45 * (Math.min(age ?? 365, 1460) / 1460);
-  return Math.log(p.tvl_usd * mult * momentum * maturity);
-}
-
-/** One fitted size curve: global log-log line plus a shrunk intercept per category. */
-export interface ValueCurve {
-  intercept: number;
-  slope: number;
-  sample: number;
-  intercepts: Map<string, number>;
-  samples: Map<string, number>;
-}
-
-function fitCurve(train: SnapshotProtocol[]): ValueCurve {
-  const xs = train.map((p) => Math.log(p.tvl_usd));
-  const ys = train.map((p) => Math.log(p.mcap_usd!));
-  const fit = olsSlope(xs, ys);
-  const slope = clamp(fit.slope, SLOPE_FLOOR, SLOPE_CAP);
-  // Re-centre the intercept at the clamped slope so the line still passes through the
-  // cloud's centre; the clamp never binds on this snapshot (fitted ≈ 0.52).
-  const intercept = ys.reduce((s, y) => s + y, 0) / ys.length - slope * (xs.reduce((s, x) => s + x, 0) / xs.length);
-  const resid = new Map<string, number[]>();
-  train.forEach((p, i) => {
-    const r = ys[i]! - (intercept + slope * xs[i]!);
-    const key = p.category ?? 'Uncategorized';
-    const list = resid.get(key) ?? [];
-    list.push(r);
-    resid.set(key, list);
-  });
-  const intercepts = new Map<string, number>();
-  const samples = new Map<string, number>();
-  for (const [cat, list] of resid) {
-    const mean = list.reduce((s, x) => s + x, 0) / list.length;
-    intercepts.set(cat, clamp((list.length * mean) / (list.length + SHRINK_K), INTERCEPT_FLOOR, INTERCEPT_CAP));
-    samples.set(cat, list.length);
-  }
-  return { intercept, slope, sample: train.length, intercepts, samples };
-}
-
-function curveImplied(p: SnapshotProtocol, curve: ValueCurve): number {
-  return curve.intercept + curve.slope * Math.log(p.tvl_usd) + (curve.intercepts.get(p.category ?? 'Uncategorized') ?? 0);
-}
-
-/** The global curve's multiple at $1B TVL (category intercept 0). */
-function globalAtQuoteOf(curve: ValueCurve): number {
-  return Math.exp(curve.intercept + curve.slope * Math.log(QUOTE_TVL)) / QUOTE_TVL;
-}
-
-/**
- * The fitted curve, tested held-out twice against the v3 medians on the same folds:
- * 5-fold cross-validation (folds by slug order, deterministic) and a time split (fit
- * the earlier-listed half, test the later half). Returns the curve fitted on all
- * token-bearing protocols plus both tests' MAE of log market cap.
- */
-export function fitAndValidate(snapshot: Snapshot): { curve: ValueCurve; validation: CurveValidation } {
-  const bearing = snapshot.protocols.filter(hasRatio).sort((a, b) => (a.slug < b.slug ? -1 : 1));
-  const curve = fitCurve(bearing);
-  const global = bearing.length > 0 ? median(bearing.map(winsorRatio)) : 0;
-  const mae = (errs: number[]): number => errs.reduce((s, e) => s + e, 0) / errs.length;
-  // 5-fold CV, same folds for both models.
-  const cvFit: number[] = [];
-  const cvMed: number[] = [];
-  for (let f = 0; f < 5; f++) {
-    const test = bearing.filter((_, i) => i % 5 === f);
-    const train = bearing.filter((_, i) => i % 5 !== f);
-    const cf = fitCurve(train);
-    const mults = medianMultiple(train, median(train.map(winsorRatio)));
-    const gTrain = median(train.map(winsorRatio));
-    for (const p of test) {
-      cvFit.push(Math.abs(curveImplied(p, cf) - Math.log(p.mcap_usd!)));
-      cvMed.push(Math.abs(medianImplied(p, snapshot.as_of, mults, gTrain) - Math.log(p.mcap_usd!)));
-    }
-  }
-  // Time split: earlier-listed half fits, later-listed half tests.
-  const dated = bearing.filter((p) => p.listed_at !== null).sort((a, b) => (a.listed_at! < b.listed_at! ? -1 : 1));
-  const cut = Math.floor(dated.length / 2);
-  const tTrain = dated.slice(0, cut);
-  const tTest = dated.slice(cut);
-  const cfT = fitCurve(tTrain);
-  const multsT = medianMultiple(tTrain, median(tTrain.map(winsorRatio)));
-  const gT = median(tTrain.map(winsorRatio));
-  const timeFit: number[] = [];
-  const timeMed: number[] = [];
-  for (const p of tTest) {
-    timeFit.push(Math.abs(curveImplied(p, cfT) - Math.log(p.mcap_usd!)));
-    timeMed.push(Math.abs(medianImplied(p, snapshot.as_of, multsT, gT) - Math.log(p.mcap_usd!)));
-  }
-  return {
-    curve,
-    validation: {
-      sample: bearing.length,
-      slope: round4(curve.slope),
-      cv_mae_fit: round4(mae(cvFit)),
-      cv_mae_median: round4(mae(cvMed)),
-      time_mae_fit: round4(mae(timeFit)),
-      time_mae_median: round4(mae(timeMed)),
-    },
-  };
-}
-
 /**
  * The market's own multiples: the global median Mcap/TVL over every token-bearing protocol,
  * and each category's median shrunk toward it by the category's sample size. Categories are
  * returned in name order with their top peers by market cap, so the dashboard can show the
  * evidence behind every multiple it uses.
  */
-export function categoryMarkets(snapshot: Snapshot, curve: ValueCurve): { global: number; sample: number; markets: CategoryMarket[] } {
+export function categoryMarkets(snapshot: Snapshot): { global: number; sample: number; markets: CategoryMarket[] } {
   const bearing = snapshot.protocols.filter(hasRatio);
   const global = bearing.length > 0 ? median(bearing.map(winsorRatio)) : 0;
   const byCategory = new Map<string, SnapshotProtocol[]>();
@@ -429,14 +262,11 @@ export function categoryMarkets(snapshot: Snapshot, curve: ValueCurve): { global
         .sort((a, b) => b.mcap_usd! - a.mcap_usd! || (a.slug < b.slug ? -1 : 1))
         .slice(0, 5)
         .map((p) => ({ slug: p.slug, name: p.name, mcap_usd: p.mcap_usd!, tvl_usd: p.tvl_usd, ratio: round4(p.mcap_usd! / p.tvl_usd) }));
-      const intercept = curve.intercepts.get(category) ?? 0;
-      const multiple = Math.exp(curve.intercept + curve.slope * Math.log(QUOTE_TVL) + intercept) / QUOTE_TVL;
       return {
         category,
         sample: list.length,
         median_ratio: round4(med),
-        multiple: round4(multiple),
-        intercept: round4(intercept),
+        multiple: round4((list.length * med + SHRINK_K * global) / (list.length + SHRINK_K)),
         peers,
       };
     });
@@ -447,15 +277,18 @@ export function categoryMarkets(snapshot: Snapshot, curve: ValueCurve): { global
 export function impliedValue(
   p: SnapshotProtocol,
   asOf: string,
-  curve: ValueCurve,
-): { implied: number; multiple: number; sample: number; growthPct: number; age: number | null } {
-  const logImplied = curveImplied(p, curve);
-  const multiple = Math.exp(logImplied) / p.tvl_usd;
-  const sample = curve.samples.get(p.category ?? 'Uncategorized') ?? 0;
-  const growthPct = p.change_7d === null ? 0 : clamp(p.change_7d, -50, 80);
+  markets: CategoryMarket[],
+  globalMultiple: number,
+): { implied: number; multiple: number; sample: number; growthPct: number; momentum: number; maturity: number; age: number | null } {
+  const market = markets.find((m) => m.category === (p.category ?? 'Uncategorized'));
+  const multiple = market !== undefined ? market.multiple : globalMultiple;
+  const sample = market !== undefined ? market.sample : 0;
+  const growthPct = p.change_7d === null ? 0 : clamp(p.change_7d, MOMENTUM_FLOOR_PCT, MOMENTUM_CAP_PCT);
+  const momentum = 1 + (growthPct / 100) * MOMENTUM_WEIGHT;
   const age = ageDays(asOf, p.listed_at);
-  const implied = clamp(Math.round(Math.exp(logImplied)), 1, 100_000_000_000_000);
-  return { implied, multiple, sample, growthPct, age };
+  const maturity = MATURITY_BASE + (Math.min(age ?? UNKNOWN_AGE_DAYS, MATURITY_DAYS) / MATURITY_DAYS) * MATURITY_RANGE;
+  const implied = clamp(Math.round(p.tvl_usd * multiple * momentum * maturity), 1, 100_000_000_000_000);
+  return { implied, multiple, sample, growthPct, momentum, maturity, age };
 }
 
 /**
@@ -604,9 +437,7 @@ export function buildBoard(snapshot: Snapshot): {
   sample: number;
   setAside: { reason: string; count: number }[];
 } {
-  const { curve, validation } = fitAndValidate(snapshot);
-  const { global, sample, markets } = categoryMarkets(snapshot, curve);
-  const globalAtQuote = globalAtQuoteOf(curve);
+  const { global, sample, markets } = categoryMarkets(snapshot);
   const watch = new Set(snapshot.watchlist);
   const chosen = new Map<string, SnapshotProtocol>();
   // The set-aside count is the discipline made visible: pre-token by the record, but a
@@ -629,7 +460,7 @@ export function buildBoard(snapshot: Snapshot): {
     if (p !== undefined && !chosen.has(slug)) chosen.set(slug, p);
   }
   const scored = [...chosen.values()].map((p) => {
-    const v = impliedValue(p, snapshot.as_of, curve);
+    const v = impliedValue(p, snapshot.as_of, markets, global);
     return { p, v };
   });
   scored.sort((a, b) => b.v.implied - a.v.implied || (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0));
@@ -647,20 +478,19 @@ export function buildBoard(snapshot: Snapshot): {
     age_days: s.v.age,
     implied_value_usd: s.v.implied,
     model: {
-      category_multiple: round4(s.v.multiple),
+      category_multiple: s.v.multiple,
       category_sample: s.v.sample,
-      global_multiple: round4(globalAtQuote),
-      curve_slope: round4(curve.slope),
-      curve_intercept: round4(curve.intercept),
-      category_intercept: round4(curve.intercepts.get(s.p.category ?? 'Uncategorized') ?? 0),
+      global_multiple: global,
       growth_pct: round4(s.v.growthPct),
+      momentum_multiplier: round4(s.v.momentum),
+      maturity_multiplier: round4(s.v.maturity),
       age_days: s.v.age,
     },
     risk_flags: riskFlags(s.p, s.v.age, s.v.sample),
     farm_steps: farmSteps(s.p, s.v.age),
     farm_economics: farmEconomics(s.p, s.v.age),
   }));
-  return { board, markets, global, sample, setAside, curve, validation };
+  return { board, markets, global, sample, setAside };
 }
 
 /** The live-token protocols, by market cap: shown at market value, kept off the ranked board. */
@@ -683,37 +513,25 @@ export function liveRows(snapshot: Snapshot): LiveRow[] {
 
 /** Everything the dashboard renders, from the snapshot. */
 export function buildRadar(snapshot: Snapshot): { board: BoardRow[]; radar: RadarData } {
-  const { board, markets, global, sample, setAside, curve, validation } = buildBoard(snapshot);
+  const { board, markets, global, sample, setAside } = buildBoard(snapshot);
   const live = liveRows(snapshot);
   const setAsideCount = setAside.reduce((n, r) => n + r.count, 0);
-  const lendInt = curve.intercepts.get('Lending');
-  const basisInt = curve.intercepts.get('Basis Trading');
   const radar: RadarData = {
     as_of: snapshot.as_of,
     source: snapshot.source,
     floor_usd: snapshot.floor_usd,
     model_version: MODEL_VERSION,
     model_summary:
-      `Implied value = exp(${curve.intercept.toFixed(2)} + ${curve.slope.toFixed(2)} x ln(TVL) + category intercept). ` +
-      `The curve is fitted at run time from the snapshot's own ${sample} token-bearing protocols (least squares of ` +
-      `log market cap on log TVL; each ratio winsorized to [0.001x, 10x] before fitting, so one 400x outlier cannot ` +
-      `price a whole category; the comparables tables show actual ratios). A token's value grows roughly with the ` +
-      `square root of TVL, not in proportion to it: the fitted multiple at $1B TVL is ${round4(globalAtQuoteOf(curve))}x, ` +
-      `and it falls as TVL rises. Each category carries its own fitted intercept` +
-      (lendInt !== undefined && basisInt !== undefined
-        ? ` (for example Lending ${lendInt.toFixed(2)}, Basis Trading +${basisInt.toFixed(2)})`
-        : ``) +
-      `, shrunk toward the global curve by sample size ((n x category + 4 x 0) / (n + 4)). ` +
-      `The curve was tested held-out twice before use: 5-fold cross-validation, MAE of log market cap ` +
-      `${validation.cv_mae_fit} vs ${validation.cv_mae_median} for the old category-median model, and a time split ` +
-      `(fit the earlier-listed half, test the later half), ${validation.time_mae_fit} vs ${validation.time_mae_median}. ` +
-      `A 7-day-growth term and an age term were fitted the same way and dropped — adding either did not improve ` +
-      `held-out error — so growth and age are shown as risk flags and set the farm hold window, but are not priced ` +
-      `into the value. Only a genuine launch candidate is ranked: a protocol that records no token and is not a wrapped, ` +
+      `Implied value = TVL x category multiple x momentum x maturity. The category multiple is the median ` +
+      `market-cap/TVL of the snapshot's own token-bearing protocols in that category (each ratio winsorized ` +
+      `to [0.001x, 10x] before the median, so one 400x outlier cannot price a whole category; the comparables ` +
+      `tables show actual ratios), shrunk toward the global median of ${global}x by sample size ` +
+      `((n x category + 4 x global) / (n + 4)). ` +
+      `Momentum = 1 + clamp(7d TVL change, -50%, +80%) / 100 x 0.6. Maturity = 0.75 + 0.45 x min(age, 1460d) / 1460. ` +
+      `Only a genuine launch candidate is ranked: a protocol that records no token and is not a wrapped, ` +
       `staked or bridged product of a token that already trades — the snapshot's own watchlist rule, applied ` +
       `to the whole board. ${setAsideCount} pre-token protocols are set aside by that rule and never ranked.`,
-    global_multiple: round4(globalAtQuoteOf(curve)),
-    validation,
+    global_multiple: global,
     token_bearing_sample: sample,
     watchlist_size: snapshot.watchlist.length,
     board_size: board.length,

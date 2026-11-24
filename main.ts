@@ -1,6 +1,5 @@
-// Token launch radar: a ranked board of pre-token protocols, priced by a size curve
-// fitted to the snapshot's own token-bearing protocols, with a farm plan and a risk
-// read for every row.
+// Token launch radar: a ranked board of pre-token protocols, priced by the market's own
+// category multiples, with a farm plan and a risk read for every row.
 //
 // The program reads the sealed snapshot from /input/snapshot.json (or --input <file|dir>),
 // builds the board with the model in lib/model.ts, writes /output/board.json and
@@ -122,7 +121,6 @@ writeFileSync(join(out, 'dossier.json'), buildDossier(out, { text_max_bytes: TEX
 
 process.stdout.write(
   `token radar: ${snapshot.protocols.length} protocols, ${snapshot.watchlist.length} on the watchlist, ${board.length} rows ranked ` +
-    `(${radar.early_size} early, ${radar.live_size} live set aside), fitted slope ${radar.validation.slope} on log TVL from ${radar.token_bearing_sample} token-bearing protocols, ` +
-    `held-out 5-fold MAE ${radar.validation.cv_mae_fit} vs ${radar.validation.cv_mae_median} for category medians\n` +
+    `(${radar.early_size} early, ${radar.live_size} live set aside), global multiple ${radar.global_multiple}x from ${radar.token_bearing_sample} token-bearing protocols\n` +
     `token radar: wrote board.json, data.js, dashboard/ (${dashFiles.length} files), screenshots/ (${shots.length} images) and dossier.json under ${out}\n`,
 );
