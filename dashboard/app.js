@@ -75,6 +75,68 @@
     '<span class="stat">Model <b>' + esc(D.model_version) + '</b></span>';
   $('modelSummary').textContent = D.model_summary;
 
+  // ---------- cover self-check + protocol accounting ----------
+  // Every figure in the strip is recomputed here, from the rows this page renders:
+  // nothing in it is a typed-in claim. The checksum is FNV-1a over each row's slug,
+  // rank and implied value — the same sum lib/model.ts stores as board_checksum — so
+  // the strip agrees with main.ts only if the page's rows are the program's rows,
+  // untouched. A check that fails shows its computed figure with a cross, not a tick.
+  function commas(n) {
+    return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  }
+  function pageChecksum(rows) {
+    var h = 0x811c9dc5;
+    for (var i = 0; i < rows.length; i++) {
+      var s = rows[i].slug + '#' + rows[i].rank + '#' + rows[i].implied_value_usd + ';';
+      for (var j = 0; j < s.length; j++) h = Math.imul(h ^ s.charCodeAt(j), 0x01000193) >>> 0;
+    }
+    return ('0000000' + h.toString(16)).slice(-8);
+  }
+  (function () {
+    var rows = D.rows;
+    var ranksOk = rows.length === D.board_size;
+    var monoOk = true;
+    var total = 0;
+    var watch = 0;
+    for (var i = 0; i < rows.length; i++) {
+      if (rows[i].rank !== i + 1) ranksOk = false;
+      if (i > 0 && rows[i].implied_value_usd > rows[i - 1].implied_value_usd) monoOk = false;
+      total += rows[i].implied_value_usd;
+      if (rows[i].watchlist) watch++;
+    }
+    var sum = pageChecksum(rows);
+    var ledgerTotal = 0;
+    var rankedTotal = 0;
+    D.accounting.forEach(function (g) {
+      ledgerTotal += g.count;
+      if (g.key.indexOf('ranked-') === 0) rankedTotal += g.count;
+    });
+    function item(ok, text) {
+      return '<span class="sc ' + (ok ? 'ok' : 'bad') + '">' + (ok ? '\u2713 ' : '\u2717 ') + esc(text) + '</span>';
+    }
+    $('selfcheck').innerHTML =
+      item(rows.length === D.board_size, 'this page is the program\u2019s board: ' + rows.length + ' of ' + D.board_size + ' rows recomputed here') +
+      item(ranksOk && monoOk, 'ranks 1\u2013' + rows.length + ' in order, values never rise') +
+      item(total === D.board_total_implied_usd, 'totals equal: $' + commas(total)) +
+      item(sum === D.board_checksum, 'checksum ' + sum + ' = main.ts') +
+      item(watch === D.watchlist_size, 'watchlist ' + watch + ' of ' + D.watchlist_size + ' ranked') +
+      item(ledgerTotal === D.universe_size && rankedTotal === D.board_size, 'ledger ' + ledgerTotal + ' of ' + D.universe_size + ' protocols, each accounted for');
+    var COLORS = { 'ranked-watchlist': '#f2a81d', 'ranked-early': '#57c785', 'token-priced': '#8a6414', 'token-unpriced': '#333a44' };
+    var ASIDE = ['#4a5568', '#5b6b7f', '#3d4a5c', '#66707c', '#54606e', '#707a88', '#48525f', '#5f6a76'];
+    var ai = 0;
+    $('ledgerbar').innerHTML = D.accounting.map(function (g) {
+      var c = COLORS[g.key] || ASIDE[ai++ % ASIDE.length];
+      var w = (g.count / D.universe_size * 100).toFixed(2);
+      return '<span class="segbar" style="width:' + w + '%;background:' + c + '" title="' + esc(g.label) + ': ' + g.count + '"></span>';
+    }).join('');
+    $('ledgerlegend').textContent = D.accounting.map(function (g) { return g.label + ' ' + g.count; }).join(' \u00b7 ') + ' \u2014 ' + D.universe_size + ' in all.';
+    $('ledgerTotal').textContent = D.universe_size;
+    $('ledgerRows').innerHTML = D.accounting.map(function (g) {
+      return '<tr><td>' + esc(g.label) + '</td><td class="num">' + g.count + '</td><td class="chains">' + esc(g.note) + '</td></tr>';
+    }).join('') + '<tr class="totalrow"><td>All protocols in the snapshot</td><td class="num">' + ledgerTotal +
+      '</td><td class="chains">Counted by the program from the snapshot; the cover strip re-adds the groups on this page.</td></tr>';
+  })();
+
   // ---------- filters ----------
   var cats = D.categories.map(function (c) { return c.category; });
   $('cat').innerHTML = '<option value="">All categories</option>' + cats.map(function (c) {

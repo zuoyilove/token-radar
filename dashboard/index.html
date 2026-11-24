@@ -18,6 +18,11 @@
   so a wrapped product never tops the board on its TVL alone. Click any row for the full
   breakdown, the category's live comparables, its risk flags and its farm plan.</p>
   <div id="stats" class="stats"></div>
+  <div id="selfcheck" class="selfcheck" aria-label="Cover self-check"></div>
+  <div class="ledgerwrap" aria-label="Protocol accounting summary">
+    <div id="ledgerbar" class="ledgerbar"></div>
+    <p id="ledgerlegend" class="ledgerlegend"></p>
+  </div>
 </header>
 
 <nav class="controls" aria-label="Board controls">
@@ -63,6 +68,20 @@
       <thead><tr><th>Protocol</th><th>Category</th><th class="num">Market cap</th>
       <th class="num">TVL</th><th class="num">Mcap / TVL</th><th class="num">7d</th></tr></thead>
       <tbody id="liveRows"></tbody>
+    </table>
+  </section>
+
+  <section id="ledger">
+    <h2>Every protocol accounted for</h2>
+    <p class="note">The snapshot holds <b id="ledgerTotal"></b> protocols, and each one has exactly one
+    destination: ranked on this board, set aside by the snapshot's own watchlist rule with the reason
+    stated, or already carrying a token — as one of the priced comparables the multiples are built
+    from, or recorded without a usable market cap. The program counts the groups from the snapshot
+    itself; the strip on the cover re-adds them on this page, so the ledger can be checked where it
+    is read.</p>
+    <table id="ledgerTable">
+      <thead><tr><th>Destination</th><th class="num">Protocols</th><th>Why</th></tr></thead>
+      <tbody id="ledgerRows"></tbody>
     </table>
   </section>
 

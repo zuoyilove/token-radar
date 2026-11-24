@@ -148,6 +148,14 @@ export interface LiveRow {
   ratio: number | null;
 }
 
+/** One destination in the full accounting of the snapshot's protocols. */
+export interface AccountingGroup {
+  key: string;
+  label: string;
+  count: number;
+  note: string;
+}
+
 /** Everything the dashboard renders, from the snapshot. */
 export interface RadarData {
   as_of: string;
@@ -164,6 +172,14 @@ export interface RadarData {
   /** Pre-token protocols set aside as wrapped/staked/bridged products, by the rule's reason. */
   set_aside_count: number;
   set_aside_reasons: { reason: string; count: number }[];
+  /** Every protocol in the snapshot, so the page can show the ledger closing. */
+  universe_size: number;
+  /** The board's implied values added up: the page re-adds them and compares. */
+  board_total_implied_usd: number;
+  /** A checksum over the board's rows: the page recomputes it from the rows it renders. */
+  board_checksum: string;
+  /** The full partition of the snapshot: every protocol, exactly one destination. */
+  accounting: AccountingGroup[];
   categories: CategoryMarket[];
   rows: RadarRow[];
   live: LiveRow[];
@@ -493,6 +509,126 @@ export function buildBoard(snapshot: Snapshot): {
   return { board, markets, global, sample, setAside };
 }
 
+/**
+ * A short checksum over the board itself: every row's slug, rank and implied value, in
+ * rank order, hashed with FNV-1a over the characters' codes. The dashboard recomputes
+ * the same sum from the rows it renders and prints both side by side on the cover, so a
+ * reader can see the page's figures are the program's figures — the string is ASCII
+ * (slugs, digits and separators), so the page's JavaScript and this file agree exactly.
+ */
+export function boardChecksum(board: BoardRow[]): string {
+  let h = 0x811c9dc5;
+  for (const r of board) {
+    const s = `${r.slug}#${r.rank}#${r.implied_value_usd};`;
+    for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 0x01000193) >>> 0;
+  }
+  return h.toString(16).padStart(8, '0');
+}
+
+/** How each set-aside reason reads on the page: the rule's own words, not the code's. */
+const SET_ASIDE_LABELS: Record<string, { label: string; note: string }> = {
+  'category-CEX': {
+    label: 'Set aside — exchange products (CEX category)',
+    note: 'Records no token, but it is an exchange\u2019s own product, not a launch candidate.',
+  },
+  'category-Liquid Staking': {
+    label: 'Set aside — liquid staking',
+    note: 'A liquid staking product of a token that already trades; its implied token already exists.',
+  },
+  'category-Bridge': {
+    label: 'Set aside — bridges',
+    note: 'A bridge product of a token that already trades; pricing it would price that token twice.',
+  },
+  'category-Canonical Bridge': {
+    label: 'Set aside — canonical bridges',
+    note: 'A canonical bridge product of a token that already trades.',
+  },
+  'category-Liquid Restaking': {
+    label: 'Set aside — liquid restaking',
+    note: 'A liquid restaking product of a token that already trades.',
+  },
+  'category-Restaked BTC': {
+    label: 'Set aside — restaked BTC',
+    note: 'A restaked-BTC product of a token that already trades.',
+  },
+  'versioned-name': {
+    label: 'Set aside — versioned names',
+    note: 'The name ends in a version marker (V2, 2.0 and the like): a pool of another protocol, not a launch.',
+  },
+  'wrapped-or-staked-name': {
+    label: 'Set aside — wrapped / staked names',
+    note: 'The name carries a whole word wrapped, staked or staking: a product of a token that already trades.',
+  },
+  'exchange-named': {
+    label: 'Set aside — exchange-named',
+    note: 'The name begins with an exchange\u2019s name: the exchange\u2019s own product.',
+  },
+};
+
+/**
+ * The full accounting of the snapshot: every protocol lands in exactly one group, so the
+ * groups add up to the snapshot's size and a reader can see where each of the protocols
+ * went — ranked on the board (watchlist or early), set aside by the watchlist rule with
+ * its reason, or already carrying a token (one of the priced comparables behind the
+ * multiples, or recorded without a usable market-cap / TVL pair). Counted here, from the
+ * snapshot and the finished board; the dashboard prints the groups and re-adds them.
+ */
+export function protocolAccounting(snapshot: Snapshot, board: BoardRow[]): AccountingGroup[] {
+  const onBoard = new Map(board.map((r) => [r.slug, r.watchlist]));
+  let watch = 0;
+  let early = 0;
+  let priced = 0;
+  let unpriced = 0;
+  const aside = new Map<string, number>();
+  for (const p of snapshot.protocols) {
+    const w = onBoard.get(p.slug);
+    if (w !== undefined) {
+      if (w) watch++;
+      else early++;
+      continue;
+    }
+    if (isPreToken(p)) {
+      const reason = eligibilityReason(p) ?? 'not-ranked';
+      aside.set(reason, (aside.get(reason) ?? 0) + 1);
+    } else if (p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0) priced++;
+    else unpriced++;
+  }
+  const groups: AccountingGroup[] = [
+    {
+      key: 'ranked-watchlist',
+      label: 'Ranked — on the watchlist',
+      count: watch,
+      note: 'Pre-token and at or above the snapshot\u2019s floor: the watchlist the board must cover, and does.',
+    },
+    {
+      key: 'ranked-early',
+      label: 'Ranked — early finds',
+      count: early,
+      note: 'Pre-token launch candidates below the floor or off the list: the finds the radar exists to surface.',
+    },
+  ];
+  for (const [reason, count] of [...aside.entries()].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1))) {
+    const meta = SET_ASIDE_LABELS[reason] ?? {
+      label: `Set aside — ${reason}`,
+      note: 'Records no token, but the watchlist rule sets it aside, so it is never ranked.',
+    };
+    groups.push({ key: `aside-${reason}`, label: meta.label, count, note: meta.note });
+  }
+  groups.push({
+    key: 'token-priced',
+    label: 'Token already trades — priced comparables',
+    count: priced,
+    note: 'A token is recorded with a usable market cap and TVL: one of the comparables the category multiples are built from.',
+  });
+  groups.push({
+    key: 'token-unpriced',
+    label: 'Token already recorded — no usable cap',
+    count: unpriced,
+    note: 'A token is recorded, but with no usable market-cap / TVL pair, so it cannot price a category; kept off the board.',
+  });
+  return groups;
+}
+
 /** The live-token protocols, by market cap: shown at market value, kept off the ranked board. */
 export function liveRows(snapshot: Snapshot): LiveRow[] {
   return snapshot.protocols
@@ -539,6 +675,10 @@ export function buildRadar(snapshot: Snapshot): { board: BoardRow[]; radar: Rada
     live_size: live.length,
     set_aside_count: setAsideCount,
     set_aside_reasons: setAside,
+    universe_size: snapshot.protocols.length,
+    board_total_implied_usd: board.reduce((n, r) => n + r.implied_value_usd, 0),
+    board_checksum: boardChecksum(board),
+    accounting: protocolAccounting(snapshot, board),
     categories: markets,
     rows: board.map((r) => ({ ...r, segment: r.watchlist ? ('watchlist' as const) : ('early' as const) })),
     live,

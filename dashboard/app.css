@@ -91,7 +91,24 @@ tbody tr:hover { background: rgba(242, 168, 29, 0.06); }
 .empty { color: var(--dim); padding: 22px 4px; }
 
 .model { margin-top: 30px; }
-.model h2, #liveWrap h2 { font-size: 16px; margin: 0 0 8px; }
+.model h2, #liveWrap h2, #ledger h2 { font-size: 16px; margin: 0 0 8px; }
+#ledger { margin-top: 30px; }
+#ledger .totalrow td { border-top: 1px solid var(--amber-dim); font-weight: 600; }
+
+.selfcheck {
+  display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 12px;
+  background: var(--panel2); border: 1px solid var(--line); border-radius: 8px;
+  padding: 8px 12px; font-family: var(--mono); font-size: 12.5px;
+}
+.selfcheck .sc.ok { color: var(--green); }
+.selfcheck .sc.bad { color: var(--red); font-weight: 600; }
+.ledgerwrap { margin-top: 10px; }
+.ledgerbar {
+  display: flex; height: 10px; border-radius: 5px; overflow: hidden;
+  border: 1px solid var(--line); background: var(--panel2);
+}
+.ledgerbar .segbar { display: block; height: 100%; }
+.ledgerlegend { color: var(--dim); font-family: var(--mono); font-size: 11.5px; margin: 6px 0 2px; }
 .note { color: var(--dim); max-width: 1060px; }
 #liveWrap { margin-top: 26px; }
 
